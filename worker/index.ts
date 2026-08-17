@@ -15,6 +15,12 @@ async function catalogue(env: Env) {
 }
 
 type IncomingItem={product_id?:string;jar_size_id?:string;quantity?:number;lolly_ids?:string[]};
+function shippingForSku(sku:string){
+  if(sku==='VK-BUNDLE-10')return {standard:1500,express:1800};
+  if(sku.startsWith('VK-700'))return {standard:950,express:950};
+  if(sku.startsWith('VK-1L')||sku.startsWith('VK-3L'))return {standard:800,express:950};
+  return {standard:850,express:950};
+}
 async function checkout(req:Request,env:Env){
   if(!env.STRIPE_SECRET_KEY) return json({error:"Stripe is not configured"},503);
   const body=await req.json().catch(()=>({})) as {items?:IncomingItem[]}; if(!Array.isArray(body.items)||!body.items.length||body.items.length>30) return json({error:"Invalid cart"},400);
@@ -39,7 +45,9 @@ async function checkout(req:Request,env:Env){
   await env.DB.batch(statements);
   const form=new URLSearchParams(); form.set("mode","payment"); form.set("success_url",`${env.APP_URL}/?checkout=success&session_id={CHECKOUT_SESSION_ID}`); form.set("cancel_url",`${env.APP_URL}/?checkout=cancelled`); form.set("customer_creation","always"); form.set("billing_address_collection","required"); form.set("shipping_address_collection[allowed_countries][0]","AU"); form.set("metadata[order_id]",orderId); form.set("metadata[order_number]",orderNumber);
   verified.forEach((item,i)=>{form.set(`line_items[${i}][price_data][currency]`,`aud`);form.set(`line_items[${i}][price_data][unit_amount]`,String(item.unit));form.set(`line_items[${i}][price_data][product_data][name]`,item.name);if(item.lollyNames?.length)form.set(`line_items[${i}][price_data][product_data][description]`,item.lollyNames.join(', '));form.set(`line_items[${i}][quantity]`,String(item.qty));});
-  form.set("shipping_options[0][shipping_rate_data][type]","fixed_amount");form.set("shipping_options[0][shipping_rate_data][fixed_amount][amount]","995");form.set("shipping_options[0][shipping_rate_data][fixed_amount][currency]","aud");form.set("shipping_options[0][shipping_rate_data][display_name]","Standard shipping");
+  const shipping=verified.reduce((rates,item)=>{const itemRates=shippingForSku(item.sku);return {standard:Math.max(rates.standard,itemRates.standard),express:Math.max(rates.express,itemRates.express)}},{standard:0,express:0});
+  form.set("shipping_options[0][shipping_rate_data][type]","fixed_amount");form.set("shipping_options[0][shipping_rate_data][fixed_amount][amount]",String(shipping.standard));form.set("shipping_options[0][shipping_rate_data][fixed_amount][currency]","aud");form.set("shipping_options[0][shipping_rate_data][display_name]","Standard postage");
+  form.set("shipping_options[1][shipping_rate_data][type]","fixed_amount");form.set("shipping_options[1][shipping_rate_data][fixed_amount][amount]",String(shipping.express));form.set("shipping_options[1][shipping_rate_data][fixed_amount][currency]","aud");form.set("shipping_options[1][shipping_rate_data][display_name]","Express postage");
   const stripe=await fetch("https://api.stripe.com/v1/checkout/sessions",{method:"POST",headers:{Authorization:`Bearer ${env.STRIPE_SECRET_KEY}`,"Content-Type":"application/x-www-form-urlencoded"},body:form}); const result=await stripe.json() as {id?:string;url?:string;error?:{message:string}};
   if(!stripe.ok||!result.id||!result.url){await env.DB.prepare("UPDATE orders SET payment_status='checkout_failed',admin_notes=? WHERE id=?").bind(result.error?.message||"Stripe error",orderId).run();return json({error:"Unable to start checkout"},502);}
   await env.DB.prepare("UPDATE orders SET stripe_session_id=? WHERE id=?").bind(result.id,orderId).run(); return json({url:result.url});

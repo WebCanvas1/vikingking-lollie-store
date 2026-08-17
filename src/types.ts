@@ -1,0 +1,4 @@
+export type Product = { id: string; name: string; slug: string; sku: string; price_cents: number; sale_price_cents: number | null; short_description: string; category_name: string; image_url: string | null; stock: number; featured: number; best_seller: number };
+export type JarSize = { id: string; name: string; volume: string; description: string; price_cents: number; max_selections: number; image_url: string | null; available: number };
+export type Lolly = { id: string; name: string; description: string; category: string; dietary_info: string; allergen_info: string; image_url: string | null; available: number };
+export type CartItem = { key: string; product_id?: string; jar_size_id?: string; name: string; image_url?: string | null; unit_price_cents: number; quantity: number; variant?: string; lolly_ids?: string[]; lolly_names?: string[] };

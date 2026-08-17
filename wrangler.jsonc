@@ -1,0 +1,27 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "vikingking-lollie-store",
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-08-17",
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "run_worker_first": ["/api/*", "/media/*"]
+  },
+  "d1_databases": [{
+    "binding": "DB",
+    "database_name": "vikingking-store",
+    "database_id": "00000000-0000-0000-0000-000000000000",
+    "migrations_dir": "migrations"
+  }],
+  "r2_buckets": [{
+    "binding": "MEDIA_BUCKET",
+    "bucket_name": "vikingking-media"
+  }],
+  "vars": {
+    "APP_URL": "http://localhost:8787",
+    "TURNSTILE_SITE_KEY": "",
+    "TURNSTILE_SECRET_KEY": "",
+    "GA4_MEASUREMENT_ID": ""
+  }
+}

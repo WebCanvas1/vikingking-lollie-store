@@ -6,7 +6,7 @@ export const cleanText = (value: unknown, max = 500) => typeof value === "string
 export const b64 = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes));
 export const fromB64 = (value: string) => Uint8Array.from(atob(value), c => c.charCodeAt(0));
 export async function sha256(value: string) { const d = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)); return b64(new Uint8Array(d)); }
-export async function pbkdf2(password: string, salt: Uint8Array, iterations = 310000) {
+export async function pbkdf2(password: string, salt: Uint8Array, iterations = 100000) {
   const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(password), "PBKDF2", false, ["deriveBits"]);
   const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", salt: salt as BufferSource, iterations, hash: "SHA-256" }, key, 256);
   return b64(new Uint8Array(bits));

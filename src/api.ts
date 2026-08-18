@@ -25,6 +25,7 @@ export const api = {
   adminDashboard: () => json<any>("/api/admin/dashboard"),
   adminProducts: () => json<{ products: Product[]; categories: { id: string; name: string }[] }>("/api/admin/products"),
   saveProduct: (product: Record<string, unknown>) => json<{ ok: true; id: string }>("/api/admin/products", { method: "POST", body: JSON.stringify(product) }),
+  deleteProduct: (id: string) => json<{ ok: true }>("/api/admin/products", { method: "DELETE", body: JSON.stringify({ id }) }),
   adminLollies: () => json<{ lollies: Record<string, unknown>[] }>("/api/admin/lollies"),
   saveLolly: (lolly: Record<string, unknown>) => json<{ ok: true; id: string }>("/api/admin/lollies", { method: "POST", body: JSON.stringify(lolly) }),
   adminJars: () => json<{ jars: Record<string, unknown>[] }>("/api/admin/jars"),

@@ -25,7 +25,7 @@ function Store(){
   const [step,setStep]=useState(1),[jar,setJar]=useState<JarSize|null>(null),[selected,setSelected]=useState<Lolly[]>([]),[notice,setNotice]=useState("");
   useEffect(()=>{api.catalogue().then(d=>{setProducts(d.products);setJars(d.jars);setLollies(d.lollies);setSettings(d.settings)}).catch(()=>{})},[]);
   useEffect(()=>localStorage.setItem("vk-cart",JSON.stringify(cart)),[cart]);
-  useEffect(()=>{const p=new URLSearchParams(location.search);if(p.get('checkout')==='success'){setNotice('Payment received - thank you for your order!');setCart([])}else if(p.get('checkout')==='cancelled')setNotice('Checkout was cancelled. Your bag is still saved.')},[]);
+  useEffect(()=>{const p=new URLSearchParams(location.search),status=p.get('checkout');if(status==='success'){setNotice('Payment received - thank you for your order!');setCart([])}else if(status==='cancelled')setNotice('Checkout was cancelled. Your bag is still saved.');if(!status)return;history.replaceState({},'',location.pathname);const timer=window.setTimeout(()=>setNotice(''),5000);return()=>window.clearTimeout(timer)},[]);
   const categories=["All",...new Set(products.map(p=>p.category_name))];
   const shown=useMemo(()=>products.filter(p=>(filter==="All"||p.category_name===filter)&&(p.name+p.category_name).toLowerCase().includes(search.toLowerCase())),[products,filter,search]);
   const add=(p:Product)=>{setCart(old=>{const found=old.find(x=>x.key===p.id);return found?old.map(x=>x.key===p.id?{...x,quantity:x.quantity+1}:x):[...old,{key:p.id,product_id:p.id,name:p.name,unit_price_cents:p.sale_price_cents??p.price_cents,quantity:1,image_url:p.image_url}]});setCartOpen(true)};

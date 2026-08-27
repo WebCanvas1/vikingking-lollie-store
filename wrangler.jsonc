@@ -23,7 +23,7 @@
   "vars": {
     "APP_URL": "https://www.vikinglolliemix.com.au",
     "ORDER_EMAIL_FROM": "VikingKing Lollie Mix <orders@vikinglolliemix.com.au>",
-    "ORDER_EMAIL_REPLY_TO": "lensairways1@icloud.com",
+    "ORDER_EMAIL_REPLY_TO": "vikingkinglolliepicknmix@gmail.com",
     "ADMIN_ORDER_EMAIL": "vikingkinglolliepicknmix@gmail.com",
     "TURNSTILE_SITE_KEY": "",
     "TURNSTILE_SECRET_KEY": "",

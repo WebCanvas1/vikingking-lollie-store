@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 import type { CartItem, JarSize, Lolly, Product } from "./types";
 import AdminPanel from "./AdminPanel";
@@ -23,6 +23,7 @@ function Store(){
   const [products,setProducts]=useState(fallbackProducts),[jars,setJars]=useState(fallbackJars),[lollies,setLollies]=useState(fallbackLollies),[settings,setSettings]=useState<Record<string,string>>({});
   const [cart,setCart]=useState<CartItem[]>(()=>JSON.parse(localStorage.getItem("vk-cart")||"[]")),[cartOpen,setCartOpen]=useState(false),[menu,setMenu]=useState(false),[filter,setFilter]=useState("All"),[search,setSearch]=useState("");
   const [step,setStep]=useState(1),[jar,setJar]=useState<JarSize|null>(null),[selected,setSelected]=useState<Lolly[]>([]),[notice,setNotice]=useState("");
+  const [checkoutBusy,setCheckoutBusy]=useState(false),checkoutLock=useRef(false);
   useEffect(()=>{api.catalogue().then(d=>{setProducts(d.products);setJars(d.jars);setLollies(d.lollies);setSettings(d.settings)}).catch(()=>{})},[]);
   useEffect(()=>localStorage.setItem("vk-cart",JSON.stringify(cart)),[cart]);
   useEffect(()=>{const p=new URLSearchParams(location.search),status=p.get('checkout');if(status==='success'){setNotice('Payment received - thank you for your order!');setCart([])}else if(status==='cancelled')setNotice('Checkout was cancelled. Your bag is still saved.');if(!status)return;history.replaceState({},'',location.pathname);const timer=window.setTimeout(()=>setNotice(''),5000);return()=>window.clearTimeout(timer)},[]);
@@ -31,7 +32,7 @@ function Store(){
   const add=(p:Product)=>{setCart(old=>{const found=old.find(x=>x.key===p.id);return found?old.map(x=>x.key===p.id?{...x,quantity:x.quantity+1}:x):[...old,{key:p.id,product_id:p.id,name:p.name,unit_price_cents:p.sale_price_cents??p.price_cents,quantity:1,image_url:p.image_url}]});setCartOpen(true)};
   const addMix=()=>{if(!jar||!selected.length)return;setCart(old=>[...old,{key:crypto.randomUUID(),jar_size_id:jar.id,name:`Custom ${jar.volume} Pick n Mix`,unit_price_cents:jar.price_cents,quantity:1,lolly_ids:selected.map(x=>x.id),lolly_names:selected.map(x=>x.name)}]);setStep(1);setJar(null);setSelected([]);setCartOpen(true)};
   const change=(key:string,n:number)=>setCart(old=>old.map(x=>x.key===key?{...x,quantity:x.quantity+n}:x).filter(x=>x.quantity>0));
-  const checkout=async()=>{try{const {url}=await api.checkout(cart.map(x=>({product_id:x.product_id,jar_size_id:x.jar_size_id,quantity:x.quantity,lolly_ids:x.lolly_ids})));location.href=url}catch(e){setNotice(e instanceof Error?e.message:"Checkout failed")}};
+  const checkout=async()=>{if(checkoutLock.current)return;checkoutLock.current=true;setCheckoutBusy(true);try{const {url}=await api.checkout(cart.map(x=>({product_id:x.product_id,jar_size_id:x.jar_size_id,quantity:x.quantity,lolly_ids:x.lolly_ids})));location.href=url}catch(e){checkoutLock.current=false;setCheckoutBusy(false);setNotice(e instanceof Error?e.message:"Checkout failed")}};
   const total=cart.reduce((s,x)=>s+x.unit_price_cents*x.quantity,0);
   return <>
     <div className="announcement">🍭 {settings.announcement||"Fresh Pick n Mix Lollies Delivered Australia Wide"}</div>
@@ -46,7 +47,7 @@ function Store(){
       <Contact email={settings.contact_email}/>
     </main>
     <footer><div><Brand/><p>Pick your favourites. Mix them your way. Enjoy every bite.</p></div><div><b>SHOP</b><a href="#shop">All products</a><a href="#mix">Build Your Mix</a></div><div><b>HELP</b><a href="#faq">FAQs</a><a href="#contact">Contact</a></div><div><b>FOLLOW</b><a target="_blank" href={settings.facebook_url||"https://www.facebook.com/vikingkinglolliepicknmix"}>Facebook ↗</a><a href="/admin">Store admin</a></div></footer>
-    <div className={cartOpen?"overlay show":"overlay"} onClick={()=>setCartOpen(false)}/><aside className={cartOpen?"cart open":"cart"}><div className="cart-head"><div><span className="eyebrow">YOUR SWEET STASH</span><h2>Your bag</h2></div><button onClick={()=>setCartOpen(false)}>×</button></div><div className="cart-list">{cart.length===0?<div className="empty">🍭<h3>Your bag is feeling light</h3></div>:cart.map(x=><article key={x.key}><span>🍬</span><div><b>{x.name}</b>{x.lolly_names&&<small>{x.lolly_names.join(", ")}</small>}<div className="quantity"><button onClick={()=>change(x.key,-1)}>−</button>{x.quantity}<button onClick={()=>change(x.key,1)}>+</button></div></div><strong>{money(x.unit_price_cents*x.quantity)}</strong></article>)}</div>{cart.length>0&&<div className="cart-total"><p><b>Subtotal</b><b>{money(total)}</b></p><small>Shipping is calculated securely at checkout.</small><button onClick={checkout} className="button primary">SECURE CHECKOUT →</button></div>}</aside>
+    <div className={cartOpen?"overlay show":"overlay"} onClick={()=>setCartOpen(false)}/><aside className={cartOpen?"cart open":"cart"}><div className="cart-head"><div><span className="eyebrow">YOUR SWEET STASH</span><h2>Your bag</h2></div><button onClick={()=>setCartOpen(false)}>×</button></div><div className="cart-list">{cart.length===0?<div className="empty">🍭<h3>Your bag is feeling light</h3></div>:cart.map(x=><article key={x.key}><span>🍬</span><div><b>{x.name}</b>{x.lolly_names&&<small>{x.lolly_names.join(", ")}</small>}<div className="quantity"><button onClick={()=>change(x.key,-1)}>−</button>{x.quantity}<button onClick={()=>change(x.key,1)}>+</button></div></div><strong>{money(x.unit_price_cents*x.quantity)}</strong></article>)}</div>{cart.length>0&&<div className="cart-total"><p><b>Subtotal</b><b>{money(total)}</b></p><small>Shipping is calculated securely at checkout.</small><button onClick={checkout} className="button primary" disabled={checkoutBusy}>{checkoutBusy?"OPENING SECURE CHECKOUT…":"SECURE CHECKOUT →"}</button></div>}</aside>
   </>
 }
 

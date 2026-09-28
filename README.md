@@ -194,4 +194,4 @@ npx wrangler tail
 npx wrangler d1 execute vikingking-store --remote --command "SELECT * FROM orders ORDER BY created_at DESC LIMIT 10"
 ```
 
-<!-- Redeploy trigger: newsletter signup/admin subscribers feature, 2026-09-28 -->
+<!-- Redeploy trigger: newsletter signup/admin subscribers feature, 2026-09-28 refresh 2 -->

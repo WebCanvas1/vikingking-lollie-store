@@ -5,3 +5,34 @@
 .admin-editor-actions{grid-column:1/-1;display:flex;justify-content:space-between;gap:12px}.button.danger{background:#fff0f3;color:#a61b3b;border:1px solid #efb7c4}
 
 .newsletter{padding:72px 7vw;background:linear-gradient(135deg,var(--plum),#4a1d72);color:#fff;display:grid;grid-template-columns:1fr 1fr;gap:6vw;align-items:center}.newsletter h2{font:700 clamp(36px,4vw,54px) Fredoka;margin:8px 0 12px}.newsletter p{color:#d8cbe1;line-height:1.65}.newsletter form{background:#ffffff10;border:1px solid #ffffff25;border-radius:22px;padding:24px}.newsletter form label{color:#fff}.newsletter form>div{display:flex;gap:10px}.newsletter input{margin:0;background:#fff}.newsletter form .button{white-space:nowrap}.newsletter form>small{display:block;color:#cdbfd5;margin-top:10px;line-height:1.5}.newsletter-status{margin:12px 0 0!important;color:#fff!important;font-weight:700}.newsletter-admin-table{overflow:auto;margin-top:16px}.newsletter-admin-table>div{display:grid;grid-template-columns:2fr .8fr 1.2fr .8fr .5fr;gap:12px;align-items:center;min-width:760px;padding:12px;border-bottom:1px solid var(--line);font-size:12px}.newsletter-admin-table button{border:1px solid var(--line);background:#fff;border-radius:8px;padding:7px 10px}@media(max-width:680px){.newsletter{grid-template-columns:1fr;padding:55px 18px;gap:25px}.newsletter form>div{flex-direction:column}.newsletter form .button{width:100%}}
+
+/* Build Your Own Jar polish */
+.jar-grid button{position:relative;display:flex;align-items:center;gap:14px;min-height:128px}
+.jar-grid button>img{width:88px;height:88px;object-fit:cover;border-radius:14px;flex:0 0 auto}
+.jar-grid button>div{min-width:0;flex:1}
+.jar-grid .jar-limit{color:var(--purple);font-weight:800;margin:7px 0}
+.choice-check{position:absolute;right:9px;top:9px;width:24px;height:24px;border-radius:50%;background:var(--pink);color:#fff;display:grid;place-items:center;font-style:normal;font-weight:900;box-shadow:0 4px 10px #f04b9b44}
+.selection-status{display:flex;align-items:end;justify-content:space-between;gap:15px;margin-top:12px}
+.selection-status p{margin:0}.selection-status small{color:var(--muted);text-align:right}
+.lolly-grid button{position:relative;min-height:118px;overflow:hidden;transition:.18s ease}
+.lolly-grid button:hover{transform:translateY(-2px);border-color:#d6b9e7}
+.lolly-grid button.blocked{opacity:.48}
+.lolly-grid img{width:100%;height:70px;object-fit:cover;border-radius:8px;margin-bottom:7px}
+.lolly-grid button.selected{box-shadow:0 0 0 2px #f04b9b24}
+.review-flavours{display:flex;gap:6px;flex-wrap:wrap}
+.cart-mix{font-size:10px!important;line-height:1.45}
+.cart-mix b{color:var(--plum)}
+@media(max-width:680px){
+  .builder{border-radius:22px;padding:17px 14px;min-height:0}
+  .builder h3{font-size:25px}
+  .jar-grid button{min-height:108px;padding:13px}
+  .jar-grid button>img{width:76px;height:76px}
+  .lolly-grid{grid-template-columns:repeat(2,1fr);gap:10px}
+  .lolly-grid button{min-height:132px;font-size:11px;padding:8px}
+  .lolly-grid img{height:88px}
+  .selection-status{align-items:flex-start;flex-direction:column;gap:4px}
+  .selection-status small{text-align:left}
+  .builder-nav{gap:8px;position:sticky;bottom:8px;background:#fff;padding:10px 0 2px;z-index:3}
+  .builder-nav .button{flex:1;padding-left:10px;padding-right:10px}
+  .review{margin-bottom:8px}
+}

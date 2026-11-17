@@ -8,7 +8,7 @@ Production-ready ecommerce foundation for VikingKing, designed to run independen
 - Cloudflare Worker backend and static asset hosting
 - Cloudflare D1 database
 - Cloudflare R2 media storage
-- Stripe Checkout and signed webhooks
+- Bank transfer checkout with manual payment confirmation
 - PBKDF2 admin passwords and secure HTTP-only sessions
 - Optional Cloudflare Turnstile verification
 
@@ -69,7 +69,7 @@ The Worker exposes stored objects at `/media/<R2_KEY>`. Admin uploads accept JPE
 cp .dev.vars.example .dev.vars
 ```
 
-Add Stripe test credentials and long random secrets to `.dev.vars`. This file is ignored by Git.
+Add long random secrets to `.dev.vars`. This file is ignored by Git.
 
 Generate secrets with:
 
@@ -119,17 +119,18 @@ curl -X POST "https://YOUR_DOMAIN/api/admin/setup" \
 
 The route refuses to create another admin after the first account exists. Admin access is available at `/admin`.
 
-## 9. Configure Stripe
+## 9. Bank transfer checkout
 
-1. Open Stripe Dashboard and remain in test mode.
-2. Go to Developers > Webhooks.
-3. Add `https://YOUR_DOMAIN/api/stripe/webhook`.
-4. Subscribe to `checkout.session.completed`.
-5. Copy the signing secret into `STRIPE_WEBHOOK_SECRET` using `wrangler secret put`.
-6. Complete a test purchase with Stripe test card `4242 4242 4242 4242`.
-7. Confirm the order changes to `paid` in D1 and appears in admin.
+Set the Worker secret `BANK_TRANSFER_DETAILS` using the format `BSB:account-number`.
+Set the same key in the ignored `.dev.vars` file for local testing.
 
-The Worker reads all prices from D1, validates stock and jar selection limits, creates the Stripe Checkout Session and verifies webhook signatures. Processed Stripe event IDs are stored to prevent duplicate webhook processing.
+Customers provide delivery details and choose an enabled postage option in the bag.
+The Worker calculates the total from D1 and creates an unpaid order, then shows the
+bank details and unique order reference. If Resend is configured, the customer
+receives the instructions by email. In **Admin → Orders**, confirm the bank
+transfer after reconciling the amount and reference against the bank statement.
+
+The signed Stripe webhook remains available for earlier Stripe sessions.
 
 ## 10. Run locally
 
@@ -166,7 +167,7 @@ In Cloudflare Dashboard:
 2. Open `vikingking-lollie-store`.
 3. Open Domains & Routes.
 4. Add the final custom domain.
-5. Update `APP_URL`, Stripe webhook URL, robots.txt and sitemap.xml.
+5. Update `APP_URL`, robots.txt and sitemap.xml.
 
 ## Production checklist
 
@@ -178,11 +179,10 @@ In Cloudflare Dashboard:
 - Create the first admin and test session expiry.
 - Enable Turnstile for admin login and contact form if desired.
 - Test R2 image uploads.
-- Run Stripe test checkout and verify the webhook updates the order once.
+- Test bank transfer checkout and confirm the order in the admin panel.
 - Test out-of-stock products and unavailable lollies.
 - Test mobile navigation, custom mix limits and cart persistence.
 - Configure GA4 and Meta Pixel only with real IDs.
-- Switch Stripe from test to live credentials only after final approval.
 
 ## Useful commands
 

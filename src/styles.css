@@ -35,4 +35,9 @@
   .builder-nav{gap:8px;position:sticky;bottom:8px;background:#fff;padding:10px 0 2px;z-index:3}
   .builder-nav .button{flex:1;padding-left:10px;padding-right:10px}
   .review{margin-bottom:8px}
-}
+}.bank-checkout fieldset{display:grid;gap:12px;border:0;margin:0;padding:0;min-width:0}
+.bank-checkout legend{font-weight:700;margin-bottom:12px}
+.bank-checkout label{display:grid;gap:4px;font-size:.9rem;font-weight:600}
+.bank-checkout input,.bank-checkout select{width:100%;border:1px solid var(--line);border-radius:8px;background:white;padding:9px;color:inherit;font:inherit}
+.bank-checkout dl{display:grid;grid-template-columns:1fr 1fr;gap:8px 12px}
+.bank-checkout dd{margin:0;font-weight:700;overflow-wrap:anywhere}

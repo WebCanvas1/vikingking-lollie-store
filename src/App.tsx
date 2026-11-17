@@ -26,14 +26,58 @@ function Store(){
   const [checkoutBusy,setCheckoutBusy]=useState(false),checkoutLock=useRef(false);
   useEffect(()=>{api.catalogue().then(d=>{setProducts(d.products);setJars(d.jars);setLollies(d.lollies);setSettings(d.settings)}).catch(()=>{})},[]);
   useEffect(()=>localStorage.setItem("vk-cart",JSON.stringify(cart)),[cart]);
-  useEffect(()=>{const p=new URLSearchParams(location.search),status=p.get('checkout');if(status==='success'){localStorage.removeItem('vk-cart');setCart([]);setNotice('Payment received - thank you for your order!')}else if(status==='cancelled')setNotice('Checkout was cancelled. Your bag is still saved.');if(!status)return;history.replaceState({},'',location.pathname);const timer=window.setTimeout(()=>setNotice(''),5000);return()=>window.clearTimeout(timer)},[]);
+
   const categories=["All",...new Set(products.map(p=>p.category_name))];
   const shown=useMemo(()=>products.filter(p=>(filter==="All"||p.category_name===filter)&&(p.name+p.category_name).toLowerCase().includes(search.toLowerCase())),[products,filter,search]);
   const add=(p:Product)=>{setCart(old=>{const found=old.find(x=>x.key===p.id);return found?old.map(x=>x.key===p.id?{...x,quantity:x.quantity+1}:x):[...old,{key:p.id,product_id:p.id,name:p.name,unit_price_cents:p.sale_price_cents??p.price_cents,quantity:1,image_url:p.image_url}]});setCartOpen(true)};
   const addMix=()=>{if(!jar||!selected.length)return;setCart(old=>[...old,{key:crypto.randomUUID(),jar_size_id:jar.id,name:`Custom ${jar.volume} Pick n Mix`,unit_price_cents:jar.price_cents,quantity:1,lolly_ids:selected.map(x=>x.id),lolly_names:selected.map(x=>x.name)}]);setStep(1);setJar(null);setSelected([]);setCartOpen(true)};
   const change=(key:string,n:number)=>setCart(old=>old.map(x=>x.key===key?{...x,quantity:x.quantity+n}:x).filter(x=>x.quantity>0));
-  const checkout=async()=>{if(checkoutLock.current)return;checkoutLock.current=true;setCheckoutBusy(true);try{const {url}=await api.checkout(cart.map(x=>({product_id:x.product_id,jar_size_id:x.jar_size_id,quantity:x.quantity,lolly_ids:x.lolly_ids})));location.href=url}catch(e){checkoutLock.current=false;setCheckoutBusy(false);setNotice(e instanceof Error?e.message:"Checkout failed")}};
-  const total=cart.reduce((s,x)=>s+x.unit_price_cents*x.quantity,0);
+  const [shipping, setShipping] = useState<Awaited<ReturnType<typeof api.shipping>>>([]);
+  const [method, setMethod] = useState("");
+  const [showCheckout, setShowCheckout] = useState(false);
+  const [checkoutError, setCheckoutError] = useState("");
+  const [receipt, setReceipt] = useState<Awaited<ReturnType<typeof api.checkout>> | null>(null);
+  const attempt = useRef<{id:string;payload:string} | null>(null);
+  const total = cart.reduce((sum, item) => sum + item.unit_price_cents * item.quantity, 0);
+  const postage = (option: typeof shipping[number]) =>
+    option.free_threshold_cents !== null && total >= option.free_threshold_cents ? 0 : option.rate_cents;
+  const rate = shipping.find(option => option.method === method);
+
+  async function openCheckout() {
+    setCheckoutError("");
+    try {
+      const options = await api.shipping();
+      if (!options.length) throw new Error("Shipping is currently unavailable.");
+      setShipping(options);
+      setMethod(options[0].method);
+      setShowCheckout(true);
+    } catch (error) {
+      setCheckoutError(error instanceof Error ? error.message : "Shipping is currently unavailable.");
+    }
+  }
+
+  async function checkout(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (checkoutLock.current) return;
+    checkoutLock.current = true;
+    setCheckoutBusy(true);
+    setCheckoutError("");
+    const details = Object.fromEntries(new FormData(event.currentTarget));
+    const items = cart.map(({ product_id, jar_size_id, quantity, lolly_ids }) => ({ product_id, jar_size_id, quantity, lolly_ids }));
+    const payload = JSON.stringify({ details, items });
+    if (attempt.current?.payload !== payload) attempt.current = { id: crypto.randomUUID(), payload };
+    try {
+      const order = await api.checkout(items, details, attempt.current.id);
+      setReceipt(order);
+      setCart([]);
+      setShowCheckout(false);
+    } catch (error) {
+      setCheckoutError(error instanceof Error ? error.message : "Could not place the order. Please try again.");
+    } finally {
+      checkoutLock.current = false;
+      setCheckoutBusy(false);
+    }
+  }
   const availableJars=jars.filter(j=>j.available!==0);
   const availableLollies=lollies.filter(l=>l.available!==0);
   const selectionFull=!!jar&&selected.length>=jar.max_selections;
@@ -43,7 +87,7 @@ function Store(){
     <header><Brand/><nav className={menu?"open":""}><a href="#home">Home</a><a href="#shop">Shop</a><a className="pink" href="#mix">Build Your Own Jar</a><a href="#about">About Us</a><a href="#faq">FAQ</a><a href="#contact">Contact</a></nav><div className="header-buttons"><button className="bag" onClick={()=>setCartOpen(true)}>Bag <b>{cart.reduce((s,x)=>s+x.quantity,0)}</b></button><button className="hamburger" onClick={()=>setMenu(!menu)}>☰</button></div></header>
     {notice&&<div className="notice" onClick={()=>setNotice("")}>{notice} <b>×</b></div>}
     <main>
-      <section className="hero" id="home"><div><span className="eyebrow">MIXED WITH JOY • DELIVERED AUSTRALIA WIDE</span><h1>PICK.<br/><em>MIX.</em> ENJOY.</h1><p>{settings.hero_subtitle||"Build your perfect lolly mix and get it delivered straight to your door. Your jar, your favourites, your way."}</p><div className="actions"><a className="button primary" href="#mix">BUILD YOUR OWN JAR →</a><a className="button outline" href="#shop">SHOP LOLLY JARS</a></div><div className="trust"><span>✓ Packed fresh</span><span>✓ Secure Stripe checkout</span><span>✓ Australian business</span></div></div><div className="hero-image"><img src="/hero-jar.webp" width="900" height="1350" fetchPriority="high" decoding="async" alt="VikingKing jar filled with colourful pick and mix lollies"/><span>100%<small>YOUR MIX</small></span></div></section>
+      <section className="hero" id="home"><div><span className="eyebrow">MIXED WITH JOY • DELIVERED AUSTRALIA WIDE</span><h1>PICK.<br/><em>MIX.</em> ENJOY.</h1><p>{settings.hero_subtitle||"Build your perfect lolly mix and get it delivered straight to your door. Your jar, your favourites, your way."}</p><div className="actions"><a className="button primary" href="#mix">BUILD YOUR OWN JAR →</a><a className="button outline" href="#shop">SHOP LOLLY JARS</a></div><div className="trust"><span>✓ Packed fresh</span><span>✓ Pay by bank transfer</span><span>✓ Australian business</span></div></div><div className="hero-image"><img src="/hero-jar.webp" width="900" height="1350" fetchPriority="high" decoding="async" alt="VikingKing jar filled with colourful pick and mix lollies"/><span>100%<small>YOUR MIX</small></span></div></section>
       <section className="section" id="shop"><div className="section-title"><div><span className="eyebrow">CROWD PLEASERS</span><h2>Sweet favourites</h2></div><input className="search" value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search sweets..."/></div><div className="chips">{categories.map(c=><button className={filter===c?"active":""} onClick={()=>setFilter(c)} key={c}>{c}</button>)}</div><div className="product-grid">{shown.map((p,i)=><article className="product-card" key={p.id}><div className="product-photo">{p.image_url?<img src={p.image_url} alt={p.name}/>:<span>{emojis[i%emojis.length]}</span>} {p.best_seller?<b>BEST SELLER</b>:null}</div><h3>{p.name}</h3><small>{p.short_description}</small><div><strong>{money(p.sale_price_cents??p.price_cents)}</strong><button onClick={()=>add(p)}>+</button></div></article>)}</div></section>
       <section className="builder-section" id="mix"><div className="builder-copy"><span className="eyebrow yellow">MADE BY YOU</span><h2>Build your dream jar.</h2><p>Choose your jar, fill it with favourites and we'll mix it fresh just for you.</p></div><div className="builder"><div className="progress"><span className={step>=1?"on":""}>1 Jar</span><i/><span className={step>=2?"on":""}>2 Lollies</span><i/><span className={step>=3?"on":""}>3 Review</span></div>{step===1&&<div><span className="eyebrow">STEP ONE</span><h3>Choose your jar</h3><div className="jar-grid">{availableJars.map(j=><button className={jar?.id===j.id?"selected":""} onClick={()=>{setJar(j);setSelected([])}} key={j.id}>{j.image_url?<img src={j.image_url} alt={j.name}/>:<span>🍭</span>}<div><b>{j.name}</b><small>{j.description}</small><small className="jar-limit">Choose up to {j.max_selections} varieties</small><strong>{money(j.price_cents)}</strong></div>{jar?.id===j.id&&<i className="choice-check">✓</i>}</button>)}</div><div className="builder-nav"><span/><button disabled={!jar} onClick={()=>setStep(2)} className="button primary">CHOOSE LOLLIES →</button></div></div>}{step===2&&jar&&<div><span className="eyebrow">STEP TWO</span><h3>Pick your favourites</h3><div className="selection-status"><p><b>{selected.length} of {jar.max_selections}</b> varieties selected</p><small>{selectionFull?"Maximum reached — deselect one to choose another.":`Choose up to ${jar.max_selections} varieties. Tap again to remove.`}</small></div><div className="meter"><i style={{width:`${Math.min(100,selected.length/jar.max_selections*100)}%`}}/></div><div className="lolly-grid">{availableLollies.map((l,i)=>{const on=selected.some(x=>x.id===l.id);const blocked=selectionFull&&!on;return <button className={`${on?"selected":""}${blocked?" blocked":""}`} aria-pressed={on} onClick={()=>toggleLolly(l)} key={l.id}>{l.image_url?<img src={l.image_url} alt={l.name}/>:<span>{emojis[i%emojis.length]}</span>}<b>{l.name}</b>{on&&<i className="choice-check">✓</i>}</button>})}</div><div className="builder-nav"><button className="button outline" onClick={()=>setStep(1)}>← BACK</button><button disabled={!selected.length} className="button primary" onClick={()=>setStep(3)}>REVIEW MIX →</button></div></div>}{step===3&&jar&&<div><span className="eyebrow">FINAL STEP</span><h3>Your mix looks delicious!</h3><div className="review"><p><span>Jar</span><b>{jar.name}</b></p><p><span>Flavours</span><b>{selected.length}</b></p><div className="review-flavours">{selected.map(x=><small key={x.id}>{x.name}</small>)}</div><p><span>Total</span><b>{money(jar.price_cents)}</b></p></div><div className="builder-nav"><button className="button outline" onClick={()=>setStep(2)}>← EDIT</button><button className="button primary" onClick={addMix}>ADD MY MIX →</button></div></div>}</div></section>
       <section className="story" id="about"><div className="story-photo"><img src="/hero-jar.webp" width="900" height="1350" loading="lazy" decoding="async" alt="Colourful VikingKing lolly jar"/></div><div><span className="eyebrow">OUR STORY</span><h2>A jar full of joy.</h2><p>VikingKing Lollie Pick n Mix makes it easy to build a lolly jar filled with the treats you actually love.</p><p>Whether you're treating yourself, surprising someone special or planning a party, every mix is packed to bring more colour and joy to the moment.</p><a href={settings.facebook_url||"https://www.facebook.com/vikingkinglolliepicknmix"} target="_blank">Follow VikingKing on Facebook →</a></div></section>
@@ -52,7 +96,31 @@ function Store(){
       <Contact email={settings.contact_email}/>
     </main>
     <footer><div><Brand/><p>Pick your favourites. Mix them your way. Enjoy every bite.</p></div><div><b>SHOP</b><a href="#shop">All products</a><a href="#mix">Build Your Own Jar</a></div><div><b>HELP</b><a href="#faq">FAQs</a><a href="#contact">Contact</a></div><div><b>FOLLOW</b><a target="_blank" href={settings.facebook_url||"https://www.facebook.com/vikingkinglolliepicknmix"}>Facebook ↗</a><a href="/admin">Store admin</a></div></footer>
-    <div className={cartOpen?"overlay show":"overlay"} onClick={()=>setCartOpen(false)}/><aside className={cartOpen?"cart open":"cart"}><div className="cart-head"><div><span className="eyebrow">YOUR SWEET STASH</span><h2>Your bag</h2></div><button onClick={()=>setCartOpen(false)}>×</button></div><div className="cart-list">{cart.length===0?<div className="empty">🍭<h3>Your bag is feeling light</h3></div>:cart.map(x=><article key={x.key}><span>🍬</span><div><b>{x.name}</b>{x.lolly_names&&<small className="cart-mix"><b>Your mix:</b> {x.lolly_names.join(", ")}</small>}<div className="quantity"><button onClick={()=>change(x.key,-1)}>−</button>{x.quantity}<button onClick={()=>change(x.key,1)}>+</button></div></div><strong>{money(x.unit_price_cents*x.quantity)}</strong></article>)}</div>{cart.length>0&&<div className="cart-total"><p><b>Subtotal</b><b>{money(total)}</b></p><small>Shipping is calculated securely at checkout.</small><button onClick={checkout} className="button primary" disabled={checkoutBusy}>{checkoutBusy?"OPENING SECURE CHECKOUT…":"SECURE CHECKOUT →"}</button></div>}</aside>
+    <div className={cartOpen?"overlay show":"overlay"} onClick={()=>{if(!checkoutLock.current)setCartOpen(false)}}/><aside className={cartOpen?"cart open":"cart"}><div className="cart-head"><div><span className="eyebrow">YOUR SWEET STASH</span><h2>Your bag</h2></div><button onClick={()=>{if(!checkoutLock.current)setCartOpen(false)}}>×</button></div><div className="cart-list">{receipt&&<section className="bank-checkout" aria-live="polite"><h3>Order {receipt.orderNumber}</h3><p>Awaiting bank transfer. Your order will be prepared once we confirm payment.</p><dl><dt>Transfer amount</dt><dd>{money(receipt.total)} AUD</dd><dt>Bank</dt><dd>{receipt.bankTransfer.bank}</dd><dt>BSB</dt><dd>{receipt.bankTransfer.bsb}</dd><dt>Account number</dt><dd>{receipt.bankTransfer.account}</dd><dt>Transfer reference</dt><dd>{receipt.orderNumber}</dd></dl><p>Use your order number as the payment reference.</p><button type="button" onClick={()=>setReceipt(null)}>Done</button></section>}{receipt?null:cart.length===0?<div className="empty">🍭<h3>Your bag is feeling light</h3></div>:cart.map(x=><article key={x.key}><span>🍬</span><div><b>{x.name}</b>{x.lolly_names&&<small className="cart-mix"><b>Your mix:</b> {x.lolly_names.join(", ")}</small>}<div className="quantity"><button disabled={checkoutBusy} onClick={()=>change(x.key,-1)}>−</button>{x.quantity}<button disabled={checkoutBusy} onClick={()=>change(x.key,1)}>+</button></div></div><strong>{money(x.unit_price_cents*x.quantity)}</strong></article>)}{!receipt && cart.length > 0 && <div className="cart-total">
+      <p><b>Subtotal</b><b>{money(total)}</b></p>
+      {checkoutError && <small role="alert">{checkoutError}</small>}
+      {showCheckout ? <form className="bank-checkout" onSubmit={checkout}>
+        <fieldset disabled={checkoutBusy}>
+          <legend>Delivery details</legend>
+          <label>Full name<input name="name" autoComplete="name" maxLength={120} required /></label>
+          <label>Email<input name="email" type="email" autoComplete="email" maxLength={254} required /></label>
+          <label>Phone (optional)<input name="phone" type="tel" autoComplete="tel" maxLength={40} /></label>
+          <label>Street address<input name="line1" autoComplete="address-line1" maxLength={150} required /></label>
+          <label>Unit or apartment (optional)<input name="line2" autoComplete="address-line2" maxLength={150} /></label>
+          <label>Suburb<input name="city" autoComplete="address-level2" maxLength={100} required /></label>
+          <label>State or territory<select name="state" autoComplete="address-level1" required>
+            <option value="">Select state or territory</option>
+            {["ACT","NSW","NT","QLD","SA","TAS","VIC","WA"].map(state => <option key={state}>{state}</option>)}
+          </select></label>
+          <label>Postcode<input name="postal_code" autoComplete="postal-code" inputMode="numeric" pattern="[0-9]{4}" maxLength={4} required /></label>
+          <label>Postage (Australia only)<select name="shipping" value={method} onChange={event => setMethod(event.target.value)}>
+            {shipping.map(option => <option key={option.method} value={option.method}>{option.label} · {money(postage(option))}</option>)}
+          </select></label>
+          {rate && <p><b>Total</b><b>{money(total + postage(rate))}</b></p>}
+          <button className="button primary">{checkoutBusy ? "PLACING ORDER…" : "PLACE ORDER · BANK TRANSFER"}</button>
+        </fieldset>
+      </form> : <><small>Choose postage at checkout. Payment is by bank transfer.</small><button onClick={openCheckout} className="button primary">CHECKOUT →</button></>}
+    </div>}</div></aside>
   </>
 }
 

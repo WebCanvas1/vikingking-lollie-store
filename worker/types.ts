@@ -3,7 +3,7 @@ export interface Env {
   MEDIA_BUCKET: R2Bucket;
   ASSETS: Fetcher;
   APP_URL: string;
-  STRIPE_SECRET_KEY: string;
+  BANK_TRANSFER_DETAILS?: string;
   STRIPE_WEBHOOK_SECRET: string;
   RESEND_API_KEY?: string;
   ORDER_EMAIL_FROM?: string;

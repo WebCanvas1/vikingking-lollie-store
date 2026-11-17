@@ -17,7 +17,11 @@ async function upload(file: File): Promise<{ key: string; url: string }> {
 
 export const api = {
   catalogue: () => json<{ products: Product[]; jars: JarSize[]; lollies: Lolly[]; categories: { id: string; name: string; slug: string; image_url: string | null }[]; settings: Record<string, string> }>("/api/catalogue"),
-  checkout: (items: unknown[]) => json<{ url: string }>("/api/checkout", { method: "POST", body: JSON.stringify({ items }) }),
+  shipping: () => json<{method:string;label:string;rate_cents:number;free_threshold_cents:number|null}[]>("/api/shipping"),
+  checkout: (items: unknown[], details: Record<string, FormDataEntryValue>, requestId: string) =>
+    json<{orderNumber:string;total:number;bankTransfer:{bank:string;bsb:string;account:string}}>("/api/bank-transfer-orders", {
+      method: "POST", body: JSON.stringify({ items, details, requestId }),
+    }),
   contact: (data: Record<string, FormDataEntryValue>) => json<{ ok: true }>("/api/contact", { method: "POST", body: JSON.stringify(data) }),
   newsletter: (email: string) => json<{ ok: true; already_subscribed: boolean }>("/api/newsletter", { method: "POST", body: JSON.stringify({ email }) }),
   adminMe: () => json<{ authenticated: boolean }>("/api/admin/me"),

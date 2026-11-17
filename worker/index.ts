@@ -15,12 +15,54 @@ async function catalogue(env: Env) {
 }
 
 type IncomingItem={product_id?:string;jar_size_id?:string;quantity?:number;lolly_ids?:string[]};
-async function checkout(req:Request,env:Env){
-  if(!env.STRIPE_SECRET_KEY) return json({error:"Stripe is not configured"},503);
-  const body=await req.json().catch(()=>({})) as {items?:IncomingItem[]}; if(!Array.isArray(body.items)||!body.items.length||body.items.length>30) return json({error:"Invalid cart"},400);
+async function shippingOptions(env: Env) {
+  const { results } = await env.DB.prepare(
+    "SELECT method,label,rate_cents,free_threshold_cents FROM shipping_settings WHERE enabled=1 AND method IN ('standard','express') ORDER BY display_order"
+  ).all<{method:string;label:string;rate_cents:number;free_threshold_cents:number|null}>();
+  return results;
+}
+
+type BankTransfer = {bank:string;bsb:string;account:string};
+
+async function checkout(req: Request, env: Env, ctx: ExecutionContext) {
+  const [bsb, account] = (env.BANK_TRANSFER_DETAILS ?? "").split(":");
+  if (!/^\d{3}-\d{3}$/.test(bsb) || !/^\d{6,10}$/.test(account ?? "")) {
+    return json({error:"Bank transfer checkout is temporarily unavailable."},503);
+  }
+  const bankTransfer: BankTransfer = { bank: "Westpac", bsb, account };
+  const body = await req.json().catch(() => null) as {items?: IncomingItem[]; details?: Record<string, unknown>; requestId?: string} | null;
+  if (!Array.isArray(body?.items) || !body.items.length || body.items.length > 30 ||
+      body.items.some(item => !item || typeof item !== "object" || (item.lolly_ids !== undefined &&
+        (!Array.isArray(item.lolly_ids) || item.lolly_ids.some(value => typeof value !== "string"))))) {
+    return json({error:"Invalid cart"},400);
+  }
+  const details = body.details ?? {};
+  const name = cleanText(details.name, 120);
+  const email = cleanText(details.email, 254);
+  const phone = cleanText(details.phone, 40);
+  const address = {
+    line1: cleanText(details.line1, 150), line2: cleanText(details.line2, 150),
+    city: cleanText(details.city, 100), state: cleanText(details.state, 3),
+    postal_code: cleanText(details.postal_code, 4), country: "AU",
+  };
+  const requestId = cleanText(body.requestId, 36);
+  if (!name || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ||
+      !address.line1 || !address.city || !/^(ACT|NSW|NT|QLD|SA|TAS|VIC|WA)$/.test(address.state) ||
+      !/^\d{4}$/.test(address.postal_code) || !/^[0-9a-f-]{36}$/.test(requestId)) {
+    return json({error:"Enter a valid name, email and Australian delivery address."},400);
+  }
+
+  const receipt = (orderNumber: string, total: number) =>
+    json({orderNumber, total, bankTransfer}, 200, {"Cache-Control":"no-store"});
+  const findOrder = () => env.DB.prepare(
+    "SELECT order_number,total_cents FROM orders WHERE id=? AND email=? AND stripe_session_id IS NULL"
+  ).bind(requestId,email).first<{order_number:string;total_cents:number}>();
+  const existing = await findOrder();
+  if (existing) return receipt(existing.order_number, existing.total_cents);
   const verified:{name:string;sku:string;unit:number;qty:number;productId?:string;jarId?:string;lollyIds?:string[];lollyNames?:string[]}[]=[];
   for(const raw of body.items){
-    const qty=Math.max(1,Math.min(20,Math.floor(Number(raw.quantity)||1)));
+    const qty = Number(raw.quantity);
+    if (!Number.isInteger(qty) || qty < 1 || qty > 20) return json({error:"Order between 1 and 20 of each item."},400);
     if(raw.jar_size_id){
       const jar=await env.DB.prepare("SELECT id,name,volume,price_cents,max_selections FROM jar_sizes WHERE id=? AND available=1").bind(raw.jar_size_id).first<{id:string;name:string;volume:string;price_cents:number;max_selections:number}>();
       if(!jar) return json({error:"A selected jar is unavailable"},409);
@@ -34,17 +76,32 @@ async function checkout(req:Request,env:Env){
       verified.push({name:product.name,sku:product.sku,unit:product.sale_price_cents??product.price_cents,qty,productId:product.id});
     } else return json({error:"Invalid cart item"},400);
   }
-  const subtotal=verified.reduce((sum,x)=>sum+x.unit*x.qty,0); const orderId=id(); const orderNumber=`VK-${Date.now().toString().slice(-8)}`;
-  const statements=[env.DB.prepare("INSERT INTO orders(id,order_number,subtotal_cents,total_cents) VALUES(?,?,?,?)").bind(orderId,orderNumber,subtotal,subtotal),...verified.map(item=>env.DB.prepare("INSERT INTO order_items(id,order_id,product_id,jar_size_id,name,sku,unit_price_cents,quantity,custom_mix_json) VALUES(?,?,?,?,?,?,?,?,?)").bind(id(),orderId,item.productId||null,item.jarId||null,item.name,item.sku,item.unit,item.qty,item.lollyIds?JSON.stringify({lolly_ids:item.lollyIds,lolly_names:item.lollyNames}):null))];
-  await env.DB.batch(statements);
-  const form=new URLSearchParams(); form.set("mode","payment"); form.set("success_url",`${env.APP_URL}/?checkout=success&session_id={CHECKOUT_SESSION_ID}`); form.set("cancel_url",`${env.APP_URL}/?checkout=cancelled`); form.set("customer_creation","always"); form.set("billing_address_collection","required"); form.set("shipping_address_collection[allowed_countries][0]","AU"); form.set("metadata[order_id]",orderId); form.set("metadata[order_number]",orderNumber);
-  verified.forEach((item,i)=>{form.set(`line_items[${i}][price_data][currency]`,`aud`);form.set(`line_items[${i}][price_data][unit_amount]`,String(item.unit));form.set(`line_items[${i}][price_data][product_data][name]`,item.name);if(item.lollyNames?.length)form.set(`line_items[${i}][price_data][product_data][description]`,item.lollyNames.join(', '));form.set(`line_items[${i}][quantity]`,String(item.qty));});
-  const shipping=await env.DB.prepare("SELECT method,label,rate_cents,free_threshold_cents FROM shipping_settings WHERE enabled=1 AND method IN ('standard','express') ORDER BY display_order").all<{method:string;label:string;rate_cents:number;free_threshold_cents:number|null}>();
-  if(!shipping.results.length)return json({error:"Shipping is not configured"},503);
-  shipping.results.forEach((rate,i)=>{const amount=rate.free_threshold_cents!==null&&subtotal>=rate.free_threshold_cents?0:rate.rate_cents;form.set(`shipping_options[${i}][shipping_rate_data][type]`,`fixed_amount`);form.set(`shipping_options[${i}][shipping_rate_data][fixed_amount][amount]`,String(amount));form.set(`shipping_options[${i}][shipping_rate_data][fixed_amount][currency]`,`aud`);form.set(`shipping_options[${i}][shipping_rate_data][display_name]`,rate.label);});
-  const stripe=await fetch("https://api.stripe.com/v1/checkout/sessions",{method:"POST",headers:{Authorization:`Bearer ${env.STRIPE_SECRET_KEY}`,"Content-Type":"application/x-www-form-urlencoded"},body:form}); const result=await stripe.json() as {id?:string;url?:string;error?:{message:string}};
-  if(!stripe.ok||!result.id||!result.url){await env.DB.prepare("UPDATE orders SET payment_status='checkout_failed',admin_notes=? WHERE id=?").bind(result.error?.message||"Stripe error",orderId).run();return json({error:"Unable to start checkout"},502);}
-  await env.DB.prepare("UPDATE orders SET stripe_session_id=? WHERE id=?").bind(result.id,orderId).run(); return json({url:result.url});
+  const subtotal = verified.reduce((sum, item) => sum + item.unit * item.qty, 0);
+  const rate = (await shippingOptions(env)).find(option => option.method === details.shipping);
+  if (!rate) return json({error:"Select an available shipping method."},400);
+  const postage = rate.free_threshold_cents !== null && subtotal >= rate.free_threshold_cents ? 0 : rate.rate_cents;
+  const total = subtotal + postage;
+  const orderNumber = "VK-" + requestId.replace(/-/g, "").slice(0, 14).toUpperCase();
+  const statements = [
+    env.DB.prepare(`INSERT INTO orders
+      (id,order_number,customer_name,email,phone,shipping_address_json,subtotal_cents,shipping_cents,total_cents)
+      VALUES(?,?,?,?,?,?,?,?,?)`).bind(requestId,orderNumber,name,email,phone || null,JSON.stringify({...address, method: rate.label}),subtotal,postage,total),
+    ...verified.map(item => env.DB.prepare(`INSERT INTO order_items
+      (id,order_id,product_id,jar_size_id,name,sku,unit_price_cents,quantity,custom_mix_json)
+      VALUES(?,?,?,?,?,?,?,?,?)`).bind(id(),requestId,item.productId ?? null,item.jarId ?? null,item.name,item.sku,item.unit,item.qty,
+        item.lollyIds ? JSON.stringify({lolly_ids:item.lollyIds,lolly_names:item.lollyNames}) : null)),
+  ];
+  try {
+    await env.DB.batch(statements);
+  } catch (error) {
+    const prior = await findOrder();
+    if (prior) return receipt(prior.order_number, prior.total_cents);
+    throw error;
+  }
+  ctx.waitUntil(sendTransferEmails(env, orderNumber, email, total, bankTransfer).catch(error => {
+    console.error("Bank transfer email failed", error);
+  }));
+  return receipt(orderNumber, total);
 }
 
 async function hmacHex(secret:string,payload:string){const key=await crypto.subtle.importKey("raw",new TextEncoder().encode(secret),{name:"HMAC",hash:"SHA-256"},false,["sign"]);const sig=await crypto.subtle.sign("HMAC",key,new TextEncoder().encode(payload));return [...new Uint8Array(sig)].map(b=>b.toString(16).padStart(2,'0')).join('');}
@@ -56,13 +113,28 @@ function addressHtml(raw:string|null){try{const a=JSON.parse(raw||'{}') as Recor
 function itemRows(items:PaidItem[]){return items.map(item=>{let mix='';try{const parsed=JSON.parse(item.custom_mix_json||'{}') as {lolly_names?:string[]};if(parsed.lolly_names?.length)mix=`<div style="color:#746b7a;font-size:13px;margin-top:4px">${parsed.lolly_names.map(escapeHtml).join(', ')}</div>`;}catch{}return `<tr><td style="padding:12px 0;border-bottom:1px solid #eadfed"><strong>${escapeHtml(item.name)}</strong>${mix}<div style="color:#746b7a;font-size:12px">${escapeHtml(item.sku)}</div></td><td style="padding:12px;text-align:center;border-bottom:1px solid #eadfed">${item.quantity}</td><td style="padding:12px 0;text-align:right;border-bottom:1px solid #eadfed">${aud(item.unit_price_cents*item.quantity)}</td></tr>`;}).join('');}
 function emailShell(title:string,intro:string,order:PaidOrder,items:PaidItem[],admin=false){return `<!doctype html><html><body style="margin:0;background:#f8f5fa;font-family:Arial,sans-serif;color:#241b2e"><div style="max-width:640px;margin:0 auto;padding:24px"><div style="background:#27113f;color:#fff;padding:24px;border-radius:18px 18px 0 0"><div style="font-size:22px;font-weight:700">VikingKing Lollie Mix</div><div style="color:#f5a8ce;margin-top:5px">Pick n' Mix</div></div><div style="background:#fff;padding:28px;border-radius:0 0 18px 18px"><h1 style="font-size:28px;margin:0 0 12px;color:#27113f">${escapeHtml(title)}</h1><p style="line-height:1.6;color:#655a6c">${escapeHtml(intro)}</p><div style="background:#fff4f9;border-radius:12px;padding:15px;margin:20px 0"><strong>Order ${escapeHtml(order.order_number)}</strong></div>${admin?`<p><strong>Customer:</strong> ${escapeHtml(order.customer_name||'Not supplied')}<br><strong>Email:</strong> ${escapeHtml(order.email||'Not supplied')}<br><strong>Phone:</strong> ${escapeHtml(order.phone||'Not supplied')}</p>`:''}<table style="width:100%;border-collapse:collapse"><thead><tr><th style="text-align:left;padding-bottom:8px">Item</th><th style="text-align:center;padding:0 12px 8px">Qty</th><th style="text-align:right;padding-bottom:8px">Amount</th></tr></thead><tbody>${itemRows(items)}</tbody></table><div style="margin:20px 0 25px auto;max-width:290px"><p style="display:flex;justify-content:space-between"><span>Subtotal</span><strong>${aud(order.subtotal_cents)}</strong></p><p style="display:flex;justify-content:space-between"><span>Postage</span><strong>${aud(order.shipping_cents)}</strong></p><p style="display:flex;justify-content:space-between;font-size:18px;color:#27113f"><span>Total paid</span><strong>${aud(order.total_cents)}</strong></p></div><h2 style="font-size:18px;color:#27113f">Delivery address</h2><p style="line-height:1.6;color:#655a6c">${addressHtml(order.shipping_address_json)}</p><p style="margin-top:28px;color:#746b7a;font-size:13px">${admin?'Open the store admin portal to manage this order.':'We will let you know when your order is on its way. If you have any questions, reply to this email.'}</p></div></div></body></html>`;}
 async function sendEmail(env:Env,to:string,subject:string,html:string){if(!env.RESEND_API_KEY)return;const response=await fetch('https://api.resend.com/emails',{method:'POST',headers:{Authorization:`Bearer ${env.RESEND_API_KEY}`,'Content-Type':'application/json'},body:JSON.stringify({from:env.ORDER_EMAIL_FROM||'VikingKing Lollie Mix <orders@vikinglolliemix.com.au>',to:[to],reply_to:env.ORDER_EMAIL_REPLY_TO||env.ADMIN_ORDER_EMAIL,subject,html})});if(!response.ok)throw new Error(`Resend ${response.status}: ${await response.text()}`);}
+async function sendTransferEmails(env: Env, reference: string, email: string, total: number, bankTransfer: BankTransfer) {
+  if (!env.RESEND_API_KEY) return;
+  const instructions = `<h1>Order ${escapeHtml(reference)}</h1>
+    <p>Your order is awaiting bank transfer. Please transfer ${aud(total)} AUD to:</p>
+    <ul><li>Bank: ${bankTransfer.bank}</li><li>BSB: ${bankTransfer.bsb}</li>
+    <li>Account number: ${bankTransfer.account}</li><li>Reference: ${escapeHtml(reference)}</li></ul>
+    <p>We will prepare your order once we confirm payment.</p>`;
+  const jobs = [sendEmail(env, email, `Bank transfer details for order ${reference}`, instructions)];
+  if (env.ADMIN_ORDER_EMAIL) jobs.push(sendEmail(env, env.ADMIN_ORDER_EMAIL,
+    `Order ${reference} awaiting bank transfer`,
+    `<p>Order ${escapeHtml(reference)} is awaiting ${aud(total)} AUD. Confirm the transfer in the Orders panel when it arrives.</p>`));
+  const results = await Promise.allSettled(jobs);
+  for (const result of results) if (result.status === "rejected") console.error("Bank transfer email failed", result.reason);
+}
+
 async function sendOrderEmails(env:Env,orderId:string){if(!env.RESEND_API_KEY)return;const [order,itemResult]=await Promise.all([env.DB.prepare("SELECT order_number,customer_name,email,phone,subtotal_cents,shipping_cents,total_cents,shipping_address_json FROM orders WHERE id=?").bind(orderId).first<PaidOrder>(),env.DB.prepare("SELECT name,sku,unit_price_cents,quantity,custom_mix_json FROM order_items WHERE order_id=? ORDER BY rowid").bind(orderId).all<PaidItem>()]);if(!order)return;const jobs:Promise<void>[]=[];if(order.email)jobs.push(sendEmail(env,order.email,`Your VikingKing order ${order.order_number} is confirmed`,emailShell('Thanks for your order!',`Hi ${order.customer_name||'there'}, your payment was successful and we are preparing your lolly mix.`,order,itemResult.results)));if(env.ADMIN_ORDER_EMAIL)jobs.push(sendEmail(env,env.ADMIN_ORDER_EMAIL,`New paid order ${order.order_number} - ${aud(order.total_cents)}`,emailShell('New paid order',`A new customer order has been paid and is ready to prepare.`,order,itemResult.results,true)));const results=await Promise.allSettled(jobs);results.forEach(result=>{if(result.status==='rejected')console.error('Order email failed',result.reason);});}
 async function webhook(req:Request,env:Env){
   const raw=await req.text();const header=req.headers.get("Stripe-Signature")||"";const parts=Object.fromEntries(header.split(',').map(x=>x.split('=',2))) as Record<string,string>;if(!parts.t||!parts.v1)return json({error:"Missing signature"},400);
   if(Math.abs(Date.now()/1000-Number(parts.t))>300)return json({error:"Expired signature"},400);const expected=await hmacHex(env.STRIPE_WEBHOOK_SECRET,`${parts.t}.${raw}`);if(!constantTimeEqual(expected,parts.v1))return json({error:"Invalid signature"},400);
   const event=JSON.parse(raw) as {id:string;type:string;data:{object:any}};const prior=await env.DB.prepare("SELECT event_id FROM stripe_events WHERE event_id=?").bind(event.id).first();if(prior)return json({received:true,duplicate:true});
   if(event.type==='checkout.session.completed'){
-    const s=event.data.object,orderId=s.metadata?.order_id; if(orderId){await env.DB.batch([env.DB.prepare("INSERT INTO stripe_events(event_id,event_type) VALUES(?,?)").bind(event.id,event.type),env.DB.prepare("UPDATE orders SET stripe_payment_intent_id=?,customer_name=?,email=?,phone=?,shipping_address_json=?,shipping_cents=?,total_cents=?,payment_status='paid',fulfilment_status='paid',updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(s.payment_intent||null,s.customer_details?.name||null,s.customer_details?.email||null,s.customer_details?.phone||null,JSON.stringify(s.shipping_details?.address||s.customer_details?.address||{}),s.total_details?.amount_shipping||0,s.amount_total||0,orderId)]);await sendOrderEmails(env,orderId);}
+    const s=event.data.object,orderId=s.metadata?.order_id; if(orderId && s.payment_status === "paid" && await env.DB.prepare("SELECT id FROM orders WHERE id=? AND stripe_session_id=?").bind(orderId,s.id).first()){await env.DB.batch([env.DB.prepare("INSERT INTO stripe_events(event_id,event_type) VALUES(?,?)").bind(event.id,event.type),env.DB.prepare("UPDATE orders SET stripe_payment_intent_id=?,customer_name=?,email=?,phone=?,shipping_address_json=?,shipping_cents=?,total_cents=?,payment_status='paid',fulfilment_status='paid',updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(s.payment_intent||null,s.customer_details?.name||null,s.customer_details?.email||null,s.customer_details?.phone||null,JSON.stringify(s.shipping_details?.address||s.customer_details?.address||{}),s.total_details?.amount_shipping||0,s.amount_total||0,orderId)]);await sendOrderEmails(env,orderId);}
   } else await env.DB.prepare("INSERT INTO stripe_events(event_id,event_type) VALUES(?,?)").bind(event.id,event.type).run(); return json({received:true});
 }
 
@@ -80,18 +152,28 @@ async function adminJars(req:Request,env:Env){if(req.method==='GET'){const rows=
 async function adminOrders(req:Request,env:Env){
   if(req.method==='GET'){
     const result=await env.DB.prepare(`SELECT o.*,oi.id AS item_id,oi.name AS item_name,oi.sku AS item_sku,oi.variant_name AS item_variant_name,oi.unit_price_cents AS item_unit_price_cents,oi.quantity AS item_quantity,oi.custom_mix_json AS item_custom_mix_json
-      FROM (SELECT id,order_number,customer_name,email,phone,subtotal_cents,shipping_cents,total_cents,payment_status,fulfilment_status,tracking_number,admin_notes,created_at FROM orders ORDER BY created_at DESC LIMIT 200) o
+      FROM (SELECT id,order_number,customer_name,email,phone,shipping_address_json,subtotal_cents,shipping_cents,total_cents,payment_status,fulfilment_status,tracking_number,admin_notes,created_at FROM orders ORDER BY created_at DESC LIMIT 200) o
       LEFT JOIN order_items oi ON oi.order_id=o.id
       ORDER BY o.created_at DESC,oi.rowid`).all<Record<string,unknown>>();
     const orders=new Map<string,Record<string,unknown>&{items:Record<string,unknown>[]}>();
     for(const row of result.results){
       const orderId=String(row.id);let order=orders.get(orderId);
-      if(!order){order={id:row.id,order_number:row.order_number,customer_name:row.customer_name,email:row.email,phone:row.phone,subtotal_cents:row.subtotal_cents,shipping_cents:row.shipping_cents,total_cents:row.total_cents,payment_status:row.payment_status,fulfilment_status:row.fulfilment_status,tracking_number:row.tracking_number,admin_notes:row.admin_notes,created_at:row.created_at,items:[]};orders.set(orderId,order);}
+      if(!order){order={id:row.id,order_number:row.order_number,customer_name:row.customer_name,email:row.email,phone:row.phone,shipping_address_json:row.shipping_address_json,subtotal_cents:row.subtotal_cents,shipping_cents:row.shipping_cents,total_cents:row.total_cents,payment_status:row.payment_status,fulfilment_status:row.fulfilment_status,tracking_number:row.tracking_number,admin_notes:row.admin_notes,created_at:row.created_at,items:[]};orders.set(orderId,order);}
       if(row.item_id){let customMix:null|Record<string,unknown>=null;try{customMix=row.item_custom_mix_json?JSON.parse(String(row.item_custom_mix_json)):null}catch{}order.items.push({id:row.item_id,name:row.item_name,sku:row.item_sku,variant_name:row.item_variant_name,unit_price_cents:row.item_unit_price_cents,quantity:row.item_quantity,custom_mix:customMix});}
     }
     return json({orders:[...orders.values()]});
   }
-  const b=await req.json() as Record<string,unknown>,orderId=cleanText(b.id,80);if(!orderId)return json({error:'Order ID is required'},400);await env.DB.prepare("UPDATE orders SET fulfilment_status=?,tracking_number=?,admin_notes=?,updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(cleanText(b.fulfilment_status,40)||'new',cleanText(b.tracking_number,120)||null,cleanText(b.admin_notes,1000)||null,orderId).run();return json({ok:true});
+  const b=await req.json() as Record<string,unknown>,orderId=cleanText(b.id,80);if(!orderId)return json({error:"Order ID is required"},400);
+  if(b.confirmPayment===true){
+    const result=await env.DB.prepare("UPDATE orders SET payment_status='paid',fulfilment_status='paid',updated_at=CURRENT_TIMESTAMP WHERE id=? AND stripe_session_id IS NULL AND payment_status='pending' AND fulfilment_status='new' AND shipping_address_json IS NOT NULL").bind(orderId).run();
+    if (!result.meta.changes) {
+      const alreadyPaid = await env.DB.prepare("SELECT id FROM orders WHERE id=? AND stripe_session_id IS NULL AND payment_status='paid'").bind(orderId).first();
+      return alreadyPaid ? json({ok:true}) : json({error:"This order is no longer awaiting payment."},409);
+    }
+    await sendOrderEmails(env,orderId).catch(error=>console.error("Order confirmation email failed",error));
+    return json({ok:true});
+  }
+  await env.DB.prepare("UPDATE orders SET fulfilment_status=?,tracking_number=?,admin_notes=?,updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(cleanText(b.fulfilment_status,40)||'new',cleanText(b.tracking_number,120)||null,cleanText(b.admin_notes,1000)||null,orderId).run();return json({ok:true});
 }
 async function adminSiteSettings(req:Request,env:Env){if(req.method==='GET'){const rows=await env.DB.prepare("SELECT key,value FROM site_settings ORDER BY key").all<{key:string,value:string}>();return json({settings:Object.fromEntries(rows.results.map(x=>[x.key,x.value]))});}const b=await req.json() as Record<string,unknown>;const allowed=['announcement','hero_title','hero_subtitle','facebook_url','contact_email','shipping_note'];const statements=allowed.filter(key=>typeof b[key]==='string').map(key=>env.DB.prepare("INSERT INTO site_settings(key,value,updated_at) VALUES(?,?,CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=CURRENT_TIMESTAMP").bind(key,cleanText(b[key],1000)));if(statements.length)await env.DB.batch(statements);return json({ok:true});}
 async function adminNewsletter(env:Env){const rows=await env.DB.prepare("SELECT id,email,status,source,created_at,updated_at,unsubscribed_at FROM newsletter_subscribers ORDER BY created_at DESC LIMIT 2000").all();const counts=await env.DB.prepare("SELECT count(*) total,sum(CASE WHEN status='subscribed' THEN 1 ELSE 0 END) active FROM newsletter_subscribers").first<{total:number;active:number}>();return json({subscribers:rows.results,total:counts?.total||0,active:counts?.active||0});}
@@ -99,10 +181,10 @@ async function adminShipping(req:Request,env:Env){if(req.method==='GET'){const r
 async function adminPassword(req:Request,env:Env,adminId:string){const b=await req.json().catch(()=>({})) as {current_password?:string;new_password?:string};if(!b.new_password||b.new_password.length<12)return json({error:'New password must be at least 12 characters'},400);const row=await env.DB.prepare("SELECT password_hash,password_salt,iterations FROM admins WHERE id=?").bind(adminId).first<{password_hash:string,password_salt:string,iterations:number}>();if(!row)return json({error:'Admin not found'},404);const current=await pbkdf2(b.current_password||'',fromB64(row.password_salt),row.iterations);if(!constantTimeEqual(current,row.password_hash))return json({error:'Current password is incorrect'},403);const iterations=100000,salt=crypto.getRandomValues(new Uint8Array(16)),hash=await pbkdf2(b.new_password,salt,iterations);await env.DB.batch([env.DB.prepare("UPDATE admins SET password_hash=?,password_salt=?,iterations=?,updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(hash,b64(salt),iterations,adminId),env.DB.prepare("DELETE FROM admin_sessions WHERE admin_id=?").bind(adminId)]);return json({ok:true});}
 async function uploadMedia(req:Request,env:Env){const form=await req.formData();const file=form.get('file');if(!(file instanceof File))return json({error:'File required'},400);if(file.size>5*1024*1024||!['image/jpeg','image/png','image/webp','image/avif'].includes(file.type))return json({error:'Use JPEG, PNG, WebP or AVIF up to 5MB'},400);const ext=file.name.split('.').pop()?.toLowerCase()||'bin',key=`uploads/${new Date().toISOString().slice(0,10)}/${id()}.${ext}`;await env.MEDIA_BUCKET.put(key,await file.arrayBuffer(),{httpMetadata:{contentType:file.type},customMetadata:{originalName:file.name}});return json({key,url:`/media/${key}`});}
 
-async function api(req:Request,env:Env){const u=new URL(req.url),path=u.pathname;
-  if(path==='/api/catalogue'&&req.method==='GET')return catalogue(env);if(path==='/api/checkout'&&req.method==='POST')return checkout(req,env);if(path==='/api/stripe/webhook'&&req.method==='POST')return webhook(req,env);if(path==='/api/contact'&&req.method==='POST')return contact(req,env);if(path==='/api/newsletter'&&req.method==='POST')return newsletter(req,env);if(path==='/api/admin/setup'&&req.method==='POST')return adminSetup(req,env);if(path==='/api/admin/login'&&req.method==='POST')return adminLogin(req,env);if(path==='/api/admin/logout'&&req.method==='POST')return adminLogout(req,env);
+async function api(req:Request,env:Env,ctx:ExecutionContext){const u=new URL(req.url),path=u.pathname;
+  if(path==='/api/shipping'&&req.method==='GET')return json(await shippingOptions(env));if(path==='/api/catalogue'&&req.method==='GET')return catalogue(env);if(path==='/api/bank-transfer-orders'&&req.method==='POST')return checkout(req,env,ctx);if(path==='/api/stripe/webhook'&&req.method==='POST')return webhook(req,env);if(path==='/api/contact'&&req.method==='POST')return contact(req,env);if(path==='/api/newsletter'&&req.method==='POST')return newsletter(req,env);if(path==='/api/admin/setup'&&req.method==='POST')return adminSetup(req,env);if(path==='/api/admin/login'&&req.method==='POST')return adminLogin(req,env);if(path==='/api/admin/logout'&&req.method==='POST')return adminLogout(req,env);
   if(path.startsWith('/api/admin/')){const admin=await requireAdmin(req,env);if(!admin)return json({error:'Unauthorised'},401);if(req.method!=='GET'&&req.headers.get('Origin')&&req.headers.get('Origin')!==new URL(env.APP_URL).origin)return json({error:'Invalid origin'},403);if(path==='/api/admin/me')return json({authenticated:true,admin});if(path==='/api/admin/dashboard')return adminDashboard(env);if(path==='/api/admin/products')return adminProducts(req,env);if(path==='/api/admin/lollies')return adminLollies(req,env);if(path==='/api/admin/jars')return adminJars(req,env);if(path==='/api/admin/orders')return adminOrders(req,env);if(path==='/api/admin/newsletter'&&req.method==='GET')return adminNewsletter(env);if(path==='/api/admin/site-settings')return adminSiteSettings(req,env);if(path==='/api/admin/shipping')return adminShipping(req,env);if(path==='/api/admin/password'&&req.method==='POST')return adminPassword(req,env,admin.id);if(path==='/api/admin/media'&&req.method==='POST')return uploadMedia(req,env);}
   return json({error:'Not found'},404);
 }
 
-export default {async fetch(req:Request,env:Env):Promise<Response>{const url=new URL(req.url);let response:Response;if(url.pathname.startsWith('/api/'))response=await api(req,env);else if(url.pathname.startsWith('/media/')){const key=url.pathname.slice(7),obj=await env.MEDIA_BUCKET.get(key);response=obj?new Response(obj.body,{headers:{'Content-Type':obj.httpMetadata?.contentType||'application/octet-stream','Cache-Control':'public, max-age=31536000, immutable'}}):new Response('Not found',{status:404});}else{response=await env.ASSETS.fetch(req);if(response.status===404)response=await env.ASSETS.fetch(new Request(new URL('/',url),req));}const h=new Headers(response.headers);Object.entries(corsHeaders).forEach(([k,v])=>h.set(k,v));return new Response(response.body,{status:response.status,statusText:response.statusText,headers:h});}};
+export default {async fetch(req:Request,env:Env,ctx:ExecutionContext):Promise<Response>{const url=new URL(req.url);let response:Response;if(url.pathname.startsWith('/api/'))response=await api(req,env,ctx);else if(url.pathname.startsWith('/media/')){const key=url.pathname.slice(7),obj=await env.MEDIA_BUCKET.get(key);response=obj?new Response(obj.body,{headers:{'Content-Type':obj.httpMetadata?.contentType||'application/octet-stream','Cache-Control':'public, max-age=31536000, immutable'}}):new Response('Not found',{status:404});}else{response=await env.ASSETS.fetch(req);if(response.status===404)response=await env.ASSETS.fetch(new Request(new URL('/',url),req));}const h=new Headers(response.headers);Object.entries(corsHeaders).forEach(([k,v])=>h.set(k,v));return new Response(response.body,{status:response.status,statusText:response.statusText,headers:h});}};

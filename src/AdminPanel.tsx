@@ -2,8 +2,8 @@ import { FormEvent, useEffect, useState } from "react";
 import { api } from "./api";
 
 type Row = Record<string, any>;
-type Tab = "Dashboard"|"Products"|"Lollies"|"Jar Sizes"|"Orders"|"Newsletter"|"Website"|"Shipping"|"Settings";
-const tabs:Tab[]=["Dashboard","Products","Lollies","Jar Sizes","Orders","Newsletter","Website","Shipping","Settings"];
+type Tab = "Dashboard"|"Products"|"Lollies"|"Jar Sizes"|"Orders"|"Coupons"|"Newsletter"|"Website"|"Shipping"|"Settings";
+const tabs:Tab[]=["Dashboard","Products","Lollies","Jar Sizes","Orders","Coupons","Newsletter","Website","Shipping","Settings"];
 const money=(c:number)=>new Intl.NumberFormat("en-AU",{style:"currency",currency:"AUD"}).format((Number(c)||0)/100);
 const slugify=(value:string)=>value.toLowerCase().trim().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"");
 
@@ -14,7 +14,38 @@ function Toggle({label,name,value,onChange}:{label:string;name:string;value:any;
 export default function AdminPanel(){
   const [auth,setAuth]=useState<boolean|null>(null),[tab,setTab]=useState<Tab>("Dashboard"),[error,setError]=useState(""),[notice,setNotice]=useState("");
   const [dashboard,setDashboard]=useState<Row>({}),[products,setProducts]=useState<Row[]>([]),[categories,setCategories]=useState<Row[]>([]),[lollies,setLollies]=useState<Row[]>([]),[jars,setJars]=useState<Row[]>([]),[orders,setOrders]=useState<Row[]>([]),[settings,setSettings]=useState<Record<string,string>>({}),[shipping,setShipping]=useState<Row[]>([]),[subscribers,setSubscribers]=useState<Row[]>([]),[newsletterStats,setNewsletterStats]=useState({total:0,active:0}),[editor,setEditor]=useState<Row|null>(null);
-  const refresh=async()=>{const [d,p,l,j,o,s,sh,n]=await Promise.all([api.adminDashboard(),api.adminProducts(),api.adminLollies(),api.adminJars(),api.adminOrders(),api.adminSiteSettings(),api.adminShipping(),api.adminNewsletter()]);setDashboard(d);setProducts(p.products);setCategories(p.categories);setLollies(l.lollies);setJars(j.jars);setOrders(o.orders);setSettings(s.settings);setShipping(sh.shipping);setSubscribers(n.subscribers);setNewsletterStats({total:n.total,active:n.active})};
+  const [coupons,setCoupons] = useState<Awaited<ReturnType<typeof api.adminCoupons>>["coupons"]>([]);
+  const [couponKind,setCouponKind] = useState<"percent"|"fixed">("percent");
+  const [couponBusy,setCouponBusy] = useState(false);
+
+  async function createCoupon(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const fields = new FormData(form);
+    const amount = Number(fields.get("amount"));
+    setCouponBusy(true);
+    setError("");
+    try {
+      await api.createCoupon({code:String(fields.get("code")),kind:couponKind,value:couponKind === "fixed" ? Math.round(amount * 100) : amount});
+      setCoupons((await api.adminCoupons()).coupons);
+      form.reset();
+      flash("Coupon created");
+    } catch (error) { setError(error instanceof Error ? error.message : "Could not create coupon"); }
+    finally { setCouponBusy(false); }
+  }
+
+  async function toggleCoupon(code: string, active: boolean) {
+    setCouponBusy(true);
+    setError("");
+    try {
+      await api.setCouponActive(code, active);
+      setCoupons((await api.adminCoupons()).coupons);
+      flash(active ? "Coupon enabled" : "Coupon disabled");
+    } catch (error) { setError(error instanceof Error ? error.message : "Could not update coupon"); }
+    finally { setCouponBusy(false); }
+  }
+
+  const refresh=async()=>{const [d,p,l,j,o,s,sh,n,c]=await Promise.all([api.adminDashboard(),api.adminProducts(),api.adminLollies(),api.adminJars(),api.adminOrders(),api.adminSiteSettings(),api.adminShipping(),api.adminNewsletter(),api.adminCoupons()]);setCoupons(c.coupons);setDashboard(d);setProducts(p.products);setCategories(p.categories);setLollies(l.lollies);setJars(j.jars);setOrders(o.orders);setSettings(s.settings);setShipping(sh.shipping);setSubscribers(n.subscribers);setNewsletterStats({total:n.total,active:n.active})};
   useEffect(()=>{api.adminMe().then(()=>{setAuth(true);refresh()}).catch(()=>setAuth(false))},[]);
   const change=(name:string,value:any)=>setEditor(old=>({...old,[name]:value}));
   const flash=(message:string)=>{setNotice(message);setTimeout(()=>setNotice(""),3500)};
@@ -40,8 +71,30 @@ export default function AdminPanel(){
       if (!window.confirm(`Confirm that the transfer for ${o.order_number} has been received?`)) return;
       try { await saveOrder({ id:o.id, confirmPayment:true }); }
       catch (error) { flash(error instanceof Error ? error.message : "Could not confirm payment"); }
-    }}>Confirm bank transfer received</button>}<b>Purchased</b>{o.items?.length?o.items.map((item:Row)=><div key={item.id}><span><strong>{item.quantity} × {item.name}</strong>{item.variant_name&&<small>{item.variant_name}</small>}{item.custom_mix?.lolly_names?.length&&<small>Flavours: {item.custom_mix.lolly_names.join(", ")}</small>}</span><span>{money(item.unit_price_cents*item.quantity)}</span></div>):<small>No item details recorded.</small>}<p><span>Subtotal {money(o.subtotal_cents)}</span><span>Postage {money(o.shipping_cents)}</span></p></div></article>)}</div>}</section>}
+    }}>Confirm bank transfer received</button>}<b>Purchased</b>{o.items?.length?o.items.map((item:Row)=><div key={item.id}><span><strong>{item.quantity} × {item.name}</strong>{item.variant_name&&<small>{item.variant_name}</small>}{item.custom_mix?.lolly_names?.length&&<small>Flavours: {item.custom_mix.lolly_names.join(", ")}</small>}</span><span>{money(item.unit_price_cents*item.quantity)}</span></div>):<small>No item details recorded.</small>}<p><span>Subtotal {money(o.subtotal_cents)}</span><span>Postage {money(o.shipping_cents)}</span>{o.coupon_code&&<span>Coupon {o.coupon_code}: −{money(o.discount_cents)}</span>}</p></div></article>)}</div>}</section>}
     {tab==="Newsletter"&&<section className="admin-card"><div className="admin-card-head"><div><h2>Newsletter subscribers</h2><p><small>{newsletterStats.active} active subscribers · {newsletterStats.total} total records</small></p></div><button className="button primary" onClick={copyNewsletterEmails}>COPY ALL EMAILS</button></div>{subscribers.length===0?<p>No newsletter signups yet.</p>:<div className="newsletter-admin-table"><div className="table-head"><span>Email</span><span>Status</span><span>Signed up</span><span>Source</span><span/></div>{subscribers.map(s=><div key={s.id}><span><b>{s.email}</b></span><span className={s.status==="subscribed"?"status live":"status"}>{s.status}</span><span>{s.created_at}</span><span>{s.source||"website"}</span><button onClick={()=>navigator.clipboard.writeText(String(s.email)).then(()=>flash("Email copied")).catch(()=>setError("Clipboard access was blocked."))}>Copy</button></div>)}</div>}</section>}
+    {tab==="Coupons"&&<section className="admin-card">
+      <h2>Create a coupon</h2>
+      <form className="admin-form" onSubmit={createCoupon}>
+        <label>Coupon code<input name="code" maxLength={32} pattern={String.raw`[A-Za-z0-9_\-]+`} required /></label>
+        <label>Discount type<select value={couponKind} onChange={event=>setCouponKind(event.target.value === "fixed" ? "fixed" : "percent")}>
+          <option value="percent">Percentage off</option><option value="fixed">Fixed amount off</option>
+        </select></label>
+        <label>{couponKind === "percent" ? "Discount (%)" : "Discount (AUD)"}
+          <input key={couponKind} name="amount" type="number" min={couponKind === "percent" ? 1 : 0.01}
+            max={couponKind === "percent" ? 100 : 10000} step={couponKind === "percent" ? 1 : 0.01} required />
+        </label>
+        <button className="button primary" disabled={couponBusy}>Create coupon</button>
+      </form>
+      <h2>Saved coupons</h2>
+      {coupons.length ? <div className="shipping-grid">{coupons.map(coupon=><article key={coupon.code}>
+        <b>{coupon.code}</b>
+        <span>{coupon.kind === "percent" ? `${coupon.value}%` : money(coupon.value)} off · {coupon.active ? "Active" : "Disabled"}</span>
+        <button className="button outline" disabled={couponBusy} onClick={()=>toggleCoupon(coupon.code,!coupon.active)}>
+          {coupon.active ? "Disable" : "Enable"}
+        </button>
+      </article>)}</div> : <p>No coupons yet.</p>}
+    </section>}
     {tab==="Website"&&<section className="admin-card narrow"><h2>Website content</h2><form className="admin-form" onSubmit={saveWebsite}><Field label="Announcement bar" name="announcement" value={settings.announcement} onChange={(n,v)=>setSettings(x=>({...x,[n]:v}))}/><Field label="Hero heading" name="hero_title" value={settings.hero_title} onChange={(n,v)=>setSettings(x=>({...x,[n]:v}))}/><label>Hero description<textarea value={settings.hero_subtitle||""} onChange={e=>setSettings(x=>({...x,hero_subtitle:e.target.value}))}/></label><Field label="Facebook URL" name="facebook_url" value={settings.facebook_url} onChange={(n,v)=>setSettings(x=>({...x,[n]:v}))}/><Field label="Contact email" name="contact_email" type="email" value={settings.contact_email} onChange={(n,v)=>setSettings(x=>({...x,[n]:v}))}/><label>Shipping note<textarea value={settings.shipping_note||""} onChange={e=>setSettings(x=>({...x,shipping_note:e.target.value}))}/></label><button className="button primary">SAVE WEBSITE</button></form></section>}
     {tab==="Shipping"&&<section className="admin-card"><h2>Shipping methods</h2><div className="shipping-grid">{shipping.map((s,index)=><article key={s.id}><Field label="Label" name="label" value={s.label} onChange={(n,v)=>setShipping(old=>old.map((x,i)=>i===index?{...x,[n]:v}:x))}/><Field label="Rate in cents" name="rate_cents" type="number" value={s.rate_cents} onChange={(n,v)=>setShipping(old=>old.map((x,i)=>i===index?{...x,[n]:v}:x))}/><Toggle label="Enabled" name="enabled" value={s.enabled} onChange={(n,v)=>setShipping(old=>old.map((x,i)=>i===index?{...x,[n]:v}:x))}/><button className="button primary" onClick={()=>saveShipping(shipping[index])}>SAVE</button></article>)}</div><p><small>Enabled shipping methods and their rates are shown to customers at checkout.</small></p></section>}
     {tab==="Settings"&&<section className="admin-card narrow"><h2>Security settings</h2><form className="admin-form" onSubmit={password}><label>Current password<input name="current_password" type="password" required/></label><label>New password<input name="new_password" type="password" minLength={12} required/></label><label>Confirm new password<input name="confirm_password" type="password" minLength={12} required/></label><button className="button primary">CHANGE PASSWORD</button></form></section>}

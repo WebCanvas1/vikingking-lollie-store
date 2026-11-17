@@ -15,11 +15,24 @@ async function upload(file: File): Promise<{ key: string; url: string }> {
   return result;
 }
 
+type Coupon = { code:string; kind:"percent"|"fixed"; value:number; active:0|1 };
+
 export const api = {
+  couponQuote: (items: unknown[], coupon: string, shipping: string) =>
+    json<{couponCode:string;discount:number;total:number}>("/api/coupon-quote", {
+      method:"POST", body:JSON.stringify({items,details:{coupon,shipping}}),
+    }),
+  adminCoupons: () => json<{coupons:Coupon[]}>("/api/admin/coupons"),
+  createCoupon: (coupon: Omit<Coupon,"active">) => json<{ok:true}>("/api/admin/coupons", {
+    method:"POST", body:JSON.stringify(coupon),
+  }),
+  setCouponActive: (code:string, active:boolean) => json<{ok:true}>("/api/admin/coupons", {
+    method:"PATCH", body:JSON.stringify({code,active}),
+  }),
   catalogue: () => json<{ products: Product[]; jars: JarSize[]; lollies: Lolly[]; categories: { id: string; name: string; slug: string; image_url: string | null }[]; settings: Record<string, string> }>("/api/catalogue"),
   shipping: () => json<{method:string;label:string;rate_cents:number;free_threshold_cents:number|null}[]>("/api/shipping"),
-  checkout: (items: unknown[], details: Record<string, FormDataEntryValue>, requestId: string) =>
-    json<{orderNumber:string;total:number;bankTransfer:{bank:string;bsb:string;account:string}}>("/api/bank-transfer-orders", {
+  checkout: (items: unknown[], details: Record<string, FormDataEntryValue | number>, requestId: string) =>
+    json<{orderNumber:string;total:number;couponCode:string|null;discount:number;bankTransfer:{bank:string;bsb:string;account:string}}>("/api/bank-transfer-orders", {
       method: "POST", body: JSON.stringify({ items, details, requestId }),
     }),
   contact: (data: Record<string, FormDataEntryValue>) => json<{ ok: true }>("/api/contact", { method: "POST", body: JSON.stringify(data) }),

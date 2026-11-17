@@ -43,6 +43,27 @@ function Store(){
     option.free_threshold_cents !== null && total >= option.free_threshold_cents ? 0 : option.rate_cents;
   const rate = shipping.find(option => option.method === method);
 
+  const [coupon, setCoupon] = useState("");
+  const [couponBusy, setCouponBusy] = useState(false);
+  const [quote, setQuote] = useState<(Awaited<ReturnType<typeof api.couponQuote>> & {key:string}) | null>(null);
+  const items = cart.map(({product_id,jar_size_id,quantity,lolly_ids}) => ({product_id,jar_size_id,quantity,lolly_ids}));
+  const quoteKey = JSON.stringify([items,method,coupon.trim().toUpperCase()]);
+  const applied = quote?.key === quoteKey ? quote : null;
+
+  async function applyCoupon() {
+    if (!coupon.trim() || !rate || couponBusy) return;
+    setCouponBusy(true);
+    setCheckoutError("");
+    setQuote(null);
+    try {
+      setQuote({...await api.couponQuote(items,coupon,method),key:quoteKey});
+    } catch (error) {
+      setCheckoutError(error instanceof Error ? error.message : "Could not apply coupon.");
+    } finally {
+      setCouponBusy(false);
+    }
+  }
+
   async function openCheckout() {
     setCheckoutError("");
     try {
@@ -58,17 +79,26 @@ function Store(){
 
   async function checkout(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (checkoutLock.current) return;
+    if (checkoutLock.current || couponBusy) return;
+    if (coupon.trim() && !applied) {
+      setCheckoutError("Apply the coupon or clear the field before placing your order.");
+      return;
+    }
     checkoutLock.current = true;
     setCheckoutBusy(true);
     setCheckoutError("");
-    const details = Object.fromEntries(new FormData(event.currentTarget));
-    const items = cart.map(({ product_id, jar_size_id, quantity, lolly_ids }) => ({ product_id, jar_size_id, quantity, lolly_ids }));
+    const details = {
+      ...Object.fromEntries(new FormData(event.currentTarget)),
+      coupon: applied?.couponCode ?? "",
+      expectedTotal: applied?.total ?? 0,
+    };
     const payload = JSON.stringify({ details, items });
     if (attempt.current?.payload !== payload) attempt.current = { id: crypto.randomUUID(), payload };
     try {
       const order = await api.checkout(items, details, attempt.current.id);
       setReceipt(order);
+      setCoupon("");
+      setQuote(null);
       setCart([]);
       setShowCheckout(false);
     } catch (error) {
@@ -96,7 +126,7 @@ function Store(){
       <Contact email={settings.contact_email}/>
     </main>
     <footer><div><Brand/><p>Pick your favourites. Mix them your way. Enjoy every bite.</p></div><div><b>SHOP</b><a href="#shop">All products</a><a href="#mix">Build Your Own Jar</a></div><div><b>HELP</b><a href="#faq">FAQs</a><a href="#contact">Contact</a></div><div><b>FOLLOW</b><a target="_blank" href={settings.facebook_url||"https://www.facebook.com/vikingkinglolliepicknmix"}>Facebook ↗</a><a href="/admin">Store admin</a></div></footer>
-    <div className={cartOpen?"overlay show":"overlay"} onClick={()=>{if(!checkoutLock.current)setCartOpen(false)}}/><aside className={cartOpen?"cart open":"cart"}><div className="cart-head"><div><span className="eyebrow">YOUR SWEET STASH</span><h2>Your bag</h2></div><button onClick={()=>{if(!checkoutLock.current)setCartOpen(false)}}>×</button></div><div className="cart-list">{receipt&&<section className="bank-checkout" aria-live="polite"><h3>Order {receipt.orderNumber}</h3><p>Awaiting bank transfer. Your order will be prepared once we confirm payment.</p><dl><dt>Transfer amount</dt><dd>{money(receipt.total)} AUD</dd><dt>Bank</dt><dd>{receipt.bankTransfer.bank}</dd><dt>BSB</dt><dd>{receipt.bankTransfer.bsb}</dd><dt>Account number</dt><dd>{receipt.bankTransfer.account}</dd><dt>Transfer reference</dt><dd>{receipt.orderNumber}</dd></dl><p>Use your order number as the payment reference.</p><button type="button" onClick={()=>setReceipt(null)}>Done</button></section>}{receipt?null:cart.length===0?<div className="empty">🍭<h3>Your bag is feeling light</h3></div>:cart.map(x=><article key={x.key}><span>🍬</span><div><b>{x.name}</b>{x.lolly_names&&<small className="cart-mix"><b>Your mix:</b> {x.lolly_names.join(", ")}</small>}<div className="quantity"><button disabled={checkoutBusy} onClick={()=>change(x.key,-1)}>−</button>{x.quantity}<button disabled={checkoutBusy} onClick={()=>change(x.key,1)}>+</button></div></div><strong>{money(x.unit_price_cents*x.quantity)}</strong></article>)}{!receipt && cart.length > 0 && <div className="cart-total">
+    <div className={cartOpen?"overlay show":"overlay"} onClick={()=>{if(!checkoutLock.current)setCartOpen(false)}}/><aside className={cartOpen?"cart open":"cart"}><div className="cart-head"><div><span className="eyebrow">YOUR SWEET STASH</span><h2>Your bag</h2></div><button onClick={()=>{if(!checkoutLock.current)setCartOpen(false)}}>×</button></div><div className="cart-list">{receipt&&<section className="bank-checkout" aria-live="polite"><h3>Order {receipt.orderNumber}</h3><p>Awaiting bank transfer. Your order will be prepared once we confirm payment.</p><dl>{receipt.discount>0&&<><dt>Coupon {receipt.couponCode}</dt><dd>−{money(receipt.discount)}</dd></>}<dt>Transfer amount</dt><dd>{money(receipt.total)} AUD</dd><dt>Bank</dt><dd>{receipt.bankTransfer.bank}</dd><dt>BSB</dt><dd>{receipt.bankTransfer.bsb}</dd><dt>Account number</dt><dd>{receipt.bankTransfer.account}</dd><dt>Transfer reference</dt><dd>{receipt.orderNumber}</dd></dl><p>Use your order number as the payment reference.</p><button type="button" onClick={()=>setReceipt(null)}>Done</button></section>}{receipt?null:cart.length===0?<div className="empty">🍭<h3>Your bag is feeling light</h3></div>:cart.map(x=><article key={x.key}><span>🍬</span><div><b>{x.name}</b>{x.lolly_names&&<small className="cart-mix"><b>Your mix:</b> {x.lolly_names.join(", ")}</small>}<div className="quantity"><button disabled={checkoutBusy} onClick={()=>change(x.key,-1)}>−</button>{x.quantity}<button disabled={checkoutBusy} onClick={()=>change(x.key,1)}>+</button></div></div><strong>{money(x.unit_price_cents*x.quantity)}</strong></article>)}{!receipt && cart.length > 0 && <div className="cart-total">
       <p><b>Subtotal</b><b>{money(total)}</b></p>
       {checkoutError && <small role="alert">{checkoutError}</small>}
       {showCheckout ? <form className="bank-checkout" onSubmit={checkout}>
@@ -116,8 +146,14 @@ function Store(){
           <label>Postage (Australia only)<select name="shipping" value={method} onChange={event => setMethod(event.target.value)}>
             {shipping.map(option => <option key={option.method} value={option.method}>{option.label} · {money(postage(option))}</option>)}
           </select></label>
-          {rate && <p><b>Total</b><b>{money(total + postage(rate))}</b></p>}
-          <button className="button primary">{checkoutBusy ? "PLACING ORDER…" : "PLACE ORDER · BANK TRANSFER"}</button>
+          <label>Discount coupon (optional)<input value={coupon} maxLength={32}
+            onChange={event => {setCoupon(event.target.value);setQuote(null);setCheckoutError("");}} /></label>
+          <button type="button" className="button outline" onClick={applyCoupon} disabled={!coupon.trim() || couponBusy}>
+            {couponBusy ? "Checking coupon…" : "Apply coupon"}
+          </button>
+          {applied && <p aria-live="polite"><span>Coupon {applied.couponCode}</span><b>−{money(applied.discount)}</b></p>}
+          {rate && <p><b>Total</b><b>{money(applied?.total ?? total + postage(rate))}</b></p>}
+          <button className="button primary" disabled={couponBusy}>{checkoutBusy ? "PLACING ORDER…" : "PLACE ORDER · BANK TRANSFER"}</button>
         </fieldset>
       </form> : <><small>Choose postage at checkout. Payment is by bank transfer.</small><button onClick={openCheckout} className="button primary">CHECKOUT →</button></>}
     </div>}</div></aside>
